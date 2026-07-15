@@ -1,0 +1,20 @@
+# 模型缓存（太大）
+models/
+
+# 测试图片
+*.png
+*.jpg
+*.jpeg
+test_images/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 调试输出
+_ocr_output.txt
+ocr_results.md
+
+# IDE
+.vscode/
