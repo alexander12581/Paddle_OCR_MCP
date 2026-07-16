@@ -1,5 +1,8 @@
 # PaddleOCR MCP Server
 
+[![中文](https://img.shields.io/badge/lang-中文-red)](README.md)
+[![English](https://img.shields.io/badge/lang-English-blue)](README_EN.md)
+
 An MCP Server that enables text-only models (DeepSeek V4, etc.) to "see" images via OCR.
 
 ## How It Works

@@ -1,5 +1,8 @@
 # PaddleOCR MCP Server
 
+[![中文](https://img.shields.io/badge/语言-中文-red)](README.md)
+[![English](https://img.shields.io/badge/lang-English-blue)](README_EN.md)
+
 让不支持图片的纯文本模型（DeepSeek V4 等）也能"看图"的 MCP Server。
 
 ## 原理
