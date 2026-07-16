@@ -12,6 +12,8 @@ import glob
 import base64
 import uuid
 import tempfile
+import time
+import threading
 from pathlib import Path
 
 # ============================================================
@@ -58,6 +60,33 @@ def _cleanup_gpu():
     except Exception:
         pass
     gc.collect()
+
+
+# ── 心跳看门狗：超过 10 分钟无请求 → 自动退出 ────────────────
+
+_last_request = time.time()
+_watchdog_lock = threading.Lock()
+
+def _bump():
+    """每次收到 OCR 请求时调用，更新最近活跃时间"""
+    global _last_request
+    with _watchdog_lock:
+        _last_request = time.time()
+
+def _watchdog():
+    """后台线程，每 30 秒检查一次，空闲超过 10 分钟 → 退出"""
+    while True:
+        time.sleep(30)
+        with _watchdog_lock:
+            idle = time.time() - _last_request
+        if idle > 600:
+            sys.stderr.write(f"[paddleocr] Idle {idle:.0f}s, auto-exiting.\n")
+            sys.stderr.flush()
+            _cleanup_gpu()
+            os._exit(0)
+
+_watchdog_thread = threading.Thread(target=_watchdog, daemon=True)
+_watchdog_thread.start()
 
 # ============================================================
 # 3. MCP Server
@@ -172,6 +201,7 @@ def recognize(image_path: str = "") -> dict:
     不传 image_path → 自动从当前会话 transcript 中提取所有图片并 OCR。
     传 image_path → 直接 OCR 指定文件。
     """
+    _bump()
     # 无路径 → transcript 兜底
     if not image_path:
         return _ocr_from_transcript()
@@ -213,12 +243,14 @@ def recognize_from_transcript(transcript_path: str = "") -> dict:
     从会话 transcript 中提取图片并 OCR（等同于 recognize() 不传参）。
     保留此工具作为独立入口，便于 AI 明确意图时直接调用。
     """
+    _bump()
     return _ocr_from_transcript(transcript_path)
 
 
 @mcp.tool
 def ocr_status() -> dict:
     """检查 OCR 引擎状态。"""
+    _bump()
     try:
         _get_ocr()
         return {"loaded": True, "language": "ch", "model_dir": _CACHE, "status": "ready"}
