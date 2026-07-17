@@ -51,6 +51,10 @@ def _str_to_bool(value: str) -> bool:
     return value.lower() in ("1", "true", "yes", "on")
 
 
+_CUDA_DEVICES = os.environ.get("PADDLEOCR_CUDA_VISIBLE_DEVICES", "")
+if _CUDA_DEVICES:
+    os.environ["CUDA_VISIBLE_DEVICES"] = _CUDA_DEVICES
+
 from paddleocr import PaddleOCR  # noqa: E402
 
 _ocr = None
@@ -142,6 +146,18 @@ def _build_text_result(image_path: str, ocr_result) -> dict:
     }
 
 
+def _predict_with_fallback(paths: list[str]) -> list:
+    """尝试一次性批量预测，失败则逐张预测并返回结果列表。"""
+    try:
+        batch_result = _ocr.predict(paths)
+        if isinstance(batch_result, list) and len(batch_result) == len(paths):
+            logger.debug("Batch predict succeeded for %d images", len(paths))
+            return batch_result
+    except Exception:
+        logger.warning("Batch predict failed, falling back to per-image predict")
+    return [_ocr.predict(p) for p in paths]
+
+
 def _handle_recognize(req: dict) -> dict:
     req_id = req.get("id", "")
     single_path = req.get("image_path", "")
@@ -150,17 +166,29 @@ def _handle_recognize(req: dict) -> dict:
         multi_paths = [single_path]
     if not multi_paths:
         return {"id": req_id, "error": "No image path provided"}
-    results = []
-    for path in multi_paths:
-        if not os.path.exists(path):
-            results.append({"error": f"File not found: {path}"})
-            continue
+    valid_paths: list[str] = []
+    missing_indices: list[int] = []
+    for i, path in enumerate(multi_paths):
+        if os.path.exists(path):
+            valid_paths.append(path)
+        else:
+            missing_indices.append(i)
+    results: list = [None] * len(multi_paths)
+    for i in missing_indices:
+        results[i] = {"error": f"File not found: {multi_paths[i]}"}
+    if valid_paths:
         try:
-            ocr_result = _ocr.predict(path)
-            results.append(_build_text_result(path, ocr_result))
+            ocr_results = _predict_with_fallback(valid_paths)
+            valid_idx = 0
+            for i in range(len(multi_paths)):
+                if results[i] is None:
+                    results[i] = _build_text_result(valid_paths[valid_idx], ocr_results[valid_idx])
+                    valid_idx += 1
         except Exception as exc:
-            logger.exception("OCR failed for %s", path)
-            results.append({"error": f"OCR failed: {exc}"})
+            logger.exception("OCR batch failed")
+            for i in range(len(multi_paths)):
+                if results[i] is None:
+                    results[i] = {"error": f"OCR failed: {exc}"}
     if single_path and len(results) == 1:
         if "error" in results[0]:
             return {"id": req_id, "error": results[0]["error"]}
@@ -216,7 +244,6 @@ def main():
             resp = {"id": req.get("id", ""), "error": f"Unknown method: {method}"}
         sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
         sys.stdout.flush()
-        _cleanup_gpu()
 
 
 if __name__ == "__main__":

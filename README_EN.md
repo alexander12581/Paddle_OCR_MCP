@@ -164,6 +164,8 @@ Please recognize these images: C:\a.png, C:\b.png, C:\c.png
 
 The AI will call `recognize_batch(image_paths=["C:/a.png", "C:/b.png", "C:/c.png"])`.
 
+The worker tries to pass the image list to PaddleOCR for batch inference; if the installed version does not support it, it automatically falls back to per-image inference. The model is loaded only once at startup, so subsequent requests do not need to re-warm the GPU.
+
 ## Improving Tool Call Accuracy
 
 External models connected to Claude Code (such as DeepSeek) may occasionally ignore the MCP tool's built-in `instructions`, resulting in the AI not calling OCR when it sees `[Unsupported Image]`.
@@ -292,6 +294,7 @@ Claude Code starts → reads mcp.json → launches mcp_server.py (lightweight ma
 | `PADDLEOCR_LOG_LEVEL` | `INFO` | Log level: `DEBUG`/`INFO`/`WARNING`/`ERROR` |
 | `PADDLEOCR_LANG` | `ch` | OCR language: `ch`/`en`/`japan`/`korean`/`chinese_cht`, etc. |
 | `PADDLEOCR_USE_GPU` | `true` | Use GPU; falls back to CPU automatically if no GPU |
+| `PADDLEOCR_CUDA_VISIBLE_DEVICES` | (empty) | GPU to use, e.g. `0` or `0,1` |
 | `PADDLEOCR_USE_TEXTLINE_ORIENTATION` | `false` | Textline orientation detection |
 | `PADDLEOCR_USE_DOC_ORIENTATION_CLASSIFY` | `false` | Document orientation classification |
 | `PADDLEOCR_USE_DOC_UNWARPING` | `false` | Document unwarping correction |
