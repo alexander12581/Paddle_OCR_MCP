@@ -175,7 +175,7 @@ Please recognize these images: C:\a.png, C:\b.png, C:\c.png
 
 The AI will call `recognize_batch(image_paths=["C:/a.png", "C:/b.png", "C:/c.png"])`.
 
-The worker tries to pass the image list to PaddleOCR for batch inference; if the installed version does not support it, it automatically falls back to per-image inference. The model is loaded only once at startup, so subsequent requests do not need to re-warm the GPU.
+The worker processes images one by one. The model is loaded only once at startup, so subsequent requests do not need to re-warm the GPU.
 
 ## Improving Tool Call Accuracy
 
@@ -311,7 +311,7 @@ Trade-off: 4 models loaded, ~1.7GB RAM, slightly slower inference, significantly
 
 **Multi-language**: switch via `PADDLEOCR_LANG`, e.g. `en`, `japan`, `korean`, `chinese_cht`. Default is `ch`.
 
-**CPU mode**: set `PADDLEOCR_USE_GPU=false` to force CPU inference.
+**CPU mode**: set `PADDLEOCR_CUDA_VISIBLE_DEVICES=""` to force CPU inference (PaddleOCR auto-uses GPU when available; empty value disables CUDA).
 
 ## Architecture
 
@@ -337,12 +337,12 @@ Claude Code starts → reads ~/.claude.json → launches mcp_server.py (lightwei
 | `PADDLEOCR_IDLE_TIMEOUT` | `300` | Worker idle auto-exit time in seconds |
 | `PADDLEOCR_LOG_LEVEL` | `INFO` | Log level: `DEBUG`/`INFO`/`WARNING`/`ERROR` |
 | `PADDLEOCR_LANG` | `ch` | OCR language: `ch`/`en`/`japan`/`korean`/`chinese_cht`, etc. |
-| `PADDLEOCR_USE_GPU` | `true` | Use GPU; falls back to CPU automatically if no GPU |
-| `PADDLEOCR_CUDA_VISIBLE_DEVICES` | (empty) | GPU to use, e.g. `0` or `0,1` |
+| `PADDLEOCR_CUDA_VISIBLE_DEVICES` | (empty) | GPU to use, e.g. `0` or `0,1`; set to empty string to force CPU |
 | `PADDLEOCR_USE_TEXTLINE_ORIENTATION` | `false` | Textline orientation detection |
 | `PADDLEOCR_USE_DOC_ORIENTATION_CLASSIFY` | `false` | Document orientation classification |
 | `PADDLEOCR_USE_DOC_UNWARPING` | `false` | Document unwarping correction |
 | `CLAUDE_PROJECTS_ROOT` | `~/.claude/projects` | Transcript file search root directory |
+| `CLAUDE_CODE_SESSION_ID` | Injected by Claude Code | Current session ID, used for precise transcript lookup without cross-window interference |
 
 ### Passing environment variables in MCP config
 
@@ -355,7 +355,7 @@ Claude Code starts → reads ~/.claude.json → launches mcp_server.py (lightwei
       "command": "E:/soft/anaconda3/envs/paddle_ocr/python.exe",
       "args": ["E:/soft/OCR/Paddle_ocr/mcp_server.py"],
       "env": {
-        "PADDLEOCR_USE_GPU": "false",
+        "PADDLEOCR_LANG": "ch",
         "PADDLEOCR_USE_DOC_UNWARPING": "true"
       }
     }

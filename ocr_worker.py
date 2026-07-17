@@ -62,15 +62,13 @@ _ocr = None
 
 def _load_model():
     global _ocr
-    use_gpu = _str_to_bool(os.environ.get("PADDLEOCR_USE_GPU", "true"))
     lang = os.environ.get("PADDLEOCR_LANG", "ch")
     use_textline_orientation = _str_to_bool(os.environ.get("PADDLEOCR_USE_TEXTLINE_ORIENTATION", "false"))
     use_doc_orientation_classify = _str_to_bool(os.environ.get("PADDLEOCR_USE_DOC_ORIENTATION_CLASSIFY", "false"))
     use_doc_unwarping = _str_to_bool(os.environ.get("PADDLEOCR_USE_DOC_UNWARPING", "false"))
-    logger.info("Loading model: lang=%s use_gpu=%s", lang, use_gpu)
+    logger.info("Loading model: lang=%s", lang)
     _ocr = PaddleOCR(
         lang=lang,
-        use_gpu=use_gpu,
         use_textline_orientation=use_textline_orientation,
         use_doc_orientation_classify=use_doc_orientation_classify,
         use_doc_unwarping=use_doc_unwarping,
@@ -161,14 +159,7 @@ def _build_text_result(image_path: str, ocr_result, output_format: str = "text")
 
 
 def _predict_with_fallback(paths: list[str]) -> list:
-    """尝试一次性批量预测，失败则逐张预测并返回结果列表。"""
-    try:
-        batch_result = _ocr.predict(paths)
-        if isinstance(batch_result, list) and len(batch_result) == len(paths):
-            logger.debug("Batch predict succeeded for %d images", len(paths))
-            return batch_result
-    except Exception:
-        logger.warning("Batch predict failed, falling back to per-image predict")
+    """逐张预测并返回结果列表。"""
     return [_ocr.predict(p) for p in paths]
 
 

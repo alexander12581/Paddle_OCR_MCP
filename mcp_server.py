@@ -68,7 +68,7 @@ def _ensure_worker():
             [_PYTHON_EXE, _WORKER_SCRIPT],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
             env=env,
@@ -79,12 +79,17 @@ def _ensure_worker():
             if data.get("status") != "ready":
                 raise RuntimeError(f"Worker not ready: {data}")
         except Exception as exc:
+            stderr_output = ""
+            try:
+                stderr_output = _worker_proc.stderr.read()
+            except Exception:
+                pass
             try:
                 _worker_proc.kill()
             except Exception:
                 pass
             _worker_proc = None
-            raise RuntimeError(f"PaddleOCR Worker 启动失败: {exc}")
+            raise RuntimeError(f"PaddleOCR Worker 启动失败: {exc}\nstderr: {stderr_output}")
         logger.info("Worker ready.")
 
 
@@ -152,7 +157,13 @@ atexit.register(_kill_worker)
 
 
 def _find_transcript(transcript_path: str = "") -> str:
-    """定位 transcript 文件路径。"""
+    """定位 transcript 文件路径。
+
+    优先级：
+    1. transcript_path 完整路径且存在 → 直接使用
+    2. CLAUDE_CODE_SESSION_ID → 精确文件名匹配（确定性，多窗口安全）
+    3. mtime 最新（最后兜底）
+    """
     if transcript_path and os.path.exists(transcript_path):
         return transcript_path
     root = os.environ.get(
@@ -162,6 +173,17 @@ def _find_transcript(transcript_path: str = "") -> str:
     candidates = glob.glob(os.path.join(root, "*", "*.jsonl"))
     if not candidates:
         return ""
+    # 优先级 2：系统注入的 session_id，精确文件名匹配
+    session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if session_id:
+        target = f"{session_id}.jsonl"
+        matched = [c for c in candidates if os.path.basename(c) == target]
+        if matched:
+            return matched[0]
+        # session_id 存在但找不到对应文件 → 不 fallback，报错
+        logger.error("Session transcript not found: %s", target)
+        return ""
+    # 优先级 3：mtime 最新（兜底）
     return max(candidates, key=os.path.getmtime)
 
 
@@ -310,15 +332,16 @@ def _normalize_result(r: dict, image: str = "", output_format: str = "text") -> 
 
 
 @mcp.tool
-def recognize(image_path: str = "", output_format: str = "text") -> dict:
+def recognize(image_path: str = "", output_format: str = "text", transcript_path: str = "") -> dict:
     """识别图片中的文字。
     不传 image_path → 自动从当前会话 transcript 提取所有图片。
     传 image_path → 直接 OCR 指定文件。
     output_format: text（默认）/ json / markdown
+    transcript_path: 手动指定 transcript 路径（通常无需传入，系统自动定位）
     """
     try:
         if not image_path:
-            return _ocr_from_transcript(output_format=output_format)
+            return _ocr_from_transcript(transcript_path=transcript_path, output_format=output_format)
         if not os.path.exists(image_path):
             return {"success": False, "error": f"文件不存在: {image_path}", "results": []}
         r = _send_to_worker("recognize", image_path=image_path, output_format=output_format)
