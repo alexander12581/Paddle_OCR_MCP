@@ -316,7 +316,7 @@ Trade-off: 4 models loaded, ~1.7GB RAM, slightly slower inference, significantly
 ## Architecture
 
 ```
-Claude Code starts → reads mcp.json → launches mcp_server.py (lightweight manager, ~85MB)
+Claude Code starts → reads ~/.claude.json → launches mcp_server.py (lightweight manager, ~85MB)
   → AI calls recognize() → manager spawns python ocr_worker.py (worker with model, ~900MB)
     → OCR completes → worker stays alive (default 300s, configurable via PADDLEOCR_IDLE_TIMEOUT)
     → idle timeout → exits, releasing GPU
