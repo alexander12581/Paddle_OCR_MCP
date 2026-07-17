@@ -29,7 +29,7 @@ PaddleOCR 支持以下四个 AI 编程工具：
 
 | 平台 | 配置文件（用户级） | 配置文件（项目级） | 配置格式 | 状态 |
 |------|-------------------|-------------------|:--:|:--:|
-| **Claude Code** | `~/.claude/mcp.json` | `<项目>/.mcp.json` | JSON | ✅ 已实测 |
+| **Claude Code** | `~/.claude.json` 内 `mcpServers` 字段 | `<项目>/.mcp.json` | JSON | ✅ 已实测 |
 | **Codex** | `~/.codex/config.toml` | `<项目>/.codex/config.toml` | TOML | ⚠️ 联网查询，未实测 |
 | **Cursor** | `~/.cursor/mcp.json` | `<项目>/.cursor/mcp.json` | JSON | ⚠️ 联网查询，未实测 |
 | **Trae** | `~/.trae/mcp.json` | `<项目>/.trae/mcp.json` | JSON | ⚠️ 联网查询，未实测 |
@@ -37,6 +37,8 @@ PaddleOCR 支持以下四个 AI 编程工具：
 > 推荐**用户级注册**——一次配置，所有项目都能用。
 
 #### Claude Code（已实测）
+
+编辑 `~/.claude.json`，在 `mcpServers` 字段中添加：
 
 ```json
 {
@@ -49,9 +51,7 @@ PaddleOCR 支持以下四个 AI 编程工具：
 }
 ```
 
-> **注意**：将 `command` 和 `args` 中的路径替换为你本机实际路径。Windows 下路径分隔符使用 `/`。
-
-配置完成后重启 Claude Code 即可生效。
+> **注意**：如果 `~/.claude.json` 中已有 `mcpServers` 字段，将 `PaddleOCR` 合并进去，不要创建新的顶级 `mcpServers`。
 
 #### Codex（联网查询）
 

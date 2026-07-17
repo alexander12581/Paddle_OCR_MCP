@@ -28,7 +28,7 @@ PaddleOCR works with the following AI coding tools:
 
 | Platform | Config File (User) | Config File (Project) | Format | Status |
 |----------|-------------------|----------------------|:--:|:--:|
-| **Claude Code** | `~/.claude/mcp.json` | `<project>/.mcp.json` | JSON | ✅ Verified |
+| **Claude Code** | `~/.claude.json` `mcpServers` field | `<project>/.mcp.json` | JSON | ✅ Verified |
 | **Codex** | `~/.codex/config.toml` | `<project>/.codex/config.toml` | TOML | ⚠️ Web research, untested |
 | **Cursor** | `~/.cursor/mcp.json` | `<project>/.cursor/mcp.json` | JSON | ⚠️ Web research, untested |
 | **Trae** | `~/.trae/mcp.json` | `<project>/.trae/mcp.json` | JSON | ⚠️ Web research, untested |
@@ -36,6 +36,8 @@ PaddleOCR works with the following AI coding tools:
 > **User-level** registration is recommended — configure once, available in all projects.
 
 #### Claude Code (Verified)
+
+Edit `~/.claude.json`, add under the `mcpServers` field:
 
 ```json
 {
@@ -48,7 +50,7 @@ PaddleOCR works with the following AI coding tools:
 }
 ```
 
-> Replace paths with your actual local paths. Use `/` as path separator on Windows. Restart Claude Code to apply.
+> **Note**: If `mcpServers` already exists in `~/.claude.json`, merge `PaddleOCR` into it. You can also use the dedicated `~/.claude/mcp.json` file — just don't configure both simultaneously, or the MCP will be loaded twice.
 
 #### Codex (Web Research)
 
