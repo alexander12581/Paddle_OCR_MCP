@@ -24,16 +24,18 @@ On first use, PaddleOCR automatically downloads model weights (~140MB) from Mode
 
 ### 2. Register the MCP Server
 
-Claude Code supports two registration modes: **user-level** (global, all projects) and **project-level** (single project). User-level is recommended — configure once, available everywhere.
+PaddleOCR works with the following AI coding tools:
 
-#### User-Level (Recommended)
+| Platform | Config File (User) | Config File (Project) | Format | Status |
+|----------|-------------------|----------------------|:--:|:--:|
+| **Claude Code** | `~/.claude/mcp.json` | `<project>/.mcp.json` | JSON | ✅ Verified |
+| **Codex** | `~/.codex/config.toml` | `<project>/.codex/config.toml` | TOML | ⚠️ Web research, untested |
+| **Cursor** | `~/.cursor/mcp.json` | `<project>/.cursor/mcp.json` | JSON | ⚠️ Web research, untested |
+| **Trae** | `~/.trae/mcp.json` | `<project>/.trae/mcp.json` | JSON | ⚠️ Web research, untested |
 
-Edit the user-level config file:
+> **User-level** registration is recommended — configure once, available in all projects.
 
-| OS | Path |
-|----|------|
-| Windows | `C:\Users\<username>\.claude\mcp.json` |
-| macOS / Linux | `~/.claude/mcp.json` |
+#### Claude Code (Verified)
 
 ```json
 {
@@ -46,19 +48,69 @@ Edit the user-level config file:
 }
 ```
 
-> **Note**: Replace `command` and `args` paths with your actual local paths. Use `/` as path separator on Windows.
+> Replace paths with your actual local paths. Use `/` as path separator on Windows. Restart Claude Code to apply.
 
-Restart Claude Code for changes to take effect. **All open Claude Code projects will load this MCP automatically.**
+#### Codex (Web Research)
 
-#### Project-Level
+```toml
+[mcp_servers.PaddleOCR]
+command = "E:/soft/anaconda3/envs/paddle_ocr/python.exe"
+args = ["E:/soft/OCR/Paddle_ocr/mcp_server.py"]
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+```
 
-If you only want the MCP in one project, create a `.mcp.json` in the project root with the same content. The project-level config only affects that project.
+Or add via CLI:
 
-**Do NOT configure both user-level and project-level for the same MCP** — Claude Code will load both, resulting in duplicate processes. Pick one.
+```bash
+codex mcp add PaddleOCR -- "E:/soft/anaconda3/envs/paddle_ocr/python.exe" "E:/soft/OCR/Paddle_ocr/mcp_server.py"
+```
+
+Restart Codex terminal after configuration. Verify with `codex mcp list`.
+
+#### Cursor (Web Research)
+
+```json
+{
+  "mcpServers": {
+    "PaddleOCR": {
+      "command": "E:/soft/anaconda3/envs/paddle_ocr/python.exe",
+      "args": ["E:/soft/OCR/Paddle_ocr/mcp_server.py"]
+    }
+  }
+}
+```
+
+After saving, check Cursor Settings → MCP panel for a green indicator. `Cmd+Shift+P` → `MCP: Reload Servers` to refresh.
+
+> On Windows, if issues arise, wrap with `"command": "cmd"` and `"args": ["/c", "E:/...python.exe", "E:/.../mcp_server.py"]`.
+
+#### Trae (Web Research)
+
+```json
+{
+  "mcpServers": {
+    "PaddleOCR": {
+      "command": "E:/soft/anaconda3/envs/paddle_ocr/python.exe",
+      "args": ["E:/soft/OCR/Paddle_ocr/mcp_server.py"]
+    }
+  }
+}
+```
+
+> Trae requires **absolute paths** for `command`. Do not use bare `python`. Ensure the Python interpreter selected in Trae matches your conda environment.
+
+Restart Trae IDE after configuration. A green indicator in the MCP panel confirms success.
+
+#### Notes
+
+- **Pick one registration method** (user-level recommended). Configuring both user and project level for the same MCP spawns duplicate processes.
+- Replace all paths with your actual local paths.
+- macOS / Linux users: replace `python.exe` with `python` or the conda environment's `bin/python`.
 
 #### Verify
 
-After restarting Claude Code, ask the AI "what tools are available?" — you should see `mcp__paddleocr__recognize` and `mcp__paddleocr__ocr_status`.
+After restarting your IDE, ask the AI "what tools are available?" — you should see `mcp__paddleocr__recognize` and `mcp__paddleocr__ocr_status`.
 
 ## Usage
 
