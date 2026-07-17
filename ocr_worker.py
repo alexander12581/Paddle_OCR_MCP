@@ -1,5 +1,4 @@
-"""
-PaddleOCR Worker — 子进程常驻 60 秒，stdin/stdout JSON-RPC。
+"""PaddleOCR Worker — 子进程常驻，stdin/stdout JSON-RPC。
 启动方式: PaddleOCR.exe ocr_worker.py
 """
 import os
@@ -7,6 +6,7 @@ import sys
 import gc
 import json
 import time
+import logging
 import threading
 
 # ============================================================
@@ -35,9 +35,21 @@ if _SITE_PACKAGES:
         if os.path.isdir(full):
             os.add_dll_directory(full)
 
+logging.basicConfig(
+    level=os.environ.get("PADDLEOCR_LOG_LEVEL", "INFO").upper(),
+    format="[%(asctime)s] [%(levelname)s] %(message)s",
+    stream=sys.stderr,
+)
+logger = logging.getLogger("PaddleOCR.Worker")
+
 # ============================================================
-# 2. 模型（常驻，只加载一次）
+# 2. 工具函数与模型加载
 # ============================================================
+
+
+def _str_to_bool(value: str) -> bool:
+    return value.lower() in ("1", "true", "yes", "on")
+
 
 from paddleocr import PaddleOCR  # noqa: E402
 
@@ -46,12 +58,20 @@ _ocr = None
 
 def _load_model():
     global _ocr
+    use_gpu = _str_to_bool(os.environ.get("PADDLEOCR_USE_GPU", "true"))
+    lang = os.environ.get("PADDLEOCR_LANG", "ch")
+    use_textline_orientation = _str_to_bool(os.environ.get("PADDLEOCR_USE_TEXTLINE_ORIENTATION", "false"))
+    use_doc_orientation_classify = _str_to_bool(os.environ.get("PADDLEOCR_USE_DOC_ORIENTATION_CLASSIFY", "false"))
+    use_doc_unwarping = _str_to_bool(os.environ.get("PADDLEOCR_USE_DOC_UNWARPING", "false"))
+    logger.info("Loading model: lang=%s use_gpu=%s", lang, use_gpu)
     _ocr = PaddleOCR(
-        lang="ch",
-        use_textline_orientation=False,
-        use_doc_orientation_classify=False,
-        use_doc_unwarping=False,
+        lang=lang,
+        use_gpu=use_gpu,
+        use_textline_orientation=use_textline_orientation,
+        use_doc_orientation_classify=use_doc_orientation_classify,
+        use_doc_unwarping=use_doc_unwarping,
     )
+    logger.info("Model loaded.")
 
 
 def _cleanup_gpu():
@@ -79,12 +99,11 @@ def _parse_result(ocr_result) -> list[dict]:
                 texts.append({"text": item, "confidence": round(score, 4)})
     return texts
 
-
 # ============================================================
-# 3. 心跳看门狗（60 秒无请求 → 退出）
+# 3. 心跳看门狗
 # ============================================================
 
-IDLE_TIMEOUT = 300
+IDLE_TIMEOUT = int(os.environ.get("PADDLEOCR_IDLE_TIMEOUT", "300"))
 _last_request = time.time()
 _idle_lock = threading.Lock()
 
@@ -101,8 +120,7 @@ def _watchdog():
         with _idle_lock:
             idle = time.time() - _last_request
         if idle > IDLE_TIMEOUT:
-            sys.stderr.write(f"[PaddleOCR Worker] idle {idle:.0f}s, exiting.\n")
-            sys.stderr.flush()
+            logger.info("Idle %.0fs, exiting.", idle)
             _cleanup_gpu()
             os._exit(0)
 
@@ -110,70 +128,92 @@ def _watchdog():
 threading.Thread(target=_watchdog, daemon=True).start()
 
 # ============================================================
-# 4. 主循环：stdin 读请求 → stdout 写结果
+# 4. 请求处理
+# ============================================================
+
+
+def _build_text_result(image_path: str, ocr_result) -> dict:
+    texts = _parse_result(ocr_result)
+    return {
+        "image": os.path.basename(image_path),
+        "text_count": len(texts),
+        "texts": texts,
+        "full_text": "\n".join(t["text"] for t in texts),
+    }
+
+
+def _handle_recognize(req: dict) -> dict:
+    req_id = req.get("id", "")
+    single_path = req.get("image_path", "")
+    multi_paths = req.get("image_paths", [])
+    if single_path and not multi_paths:
+        multi_paths = [single_path]
+    if not multi_paths:
+        return {"id": req_id, "error": "No image path provided"}
+    results = []
+    for path in multi_paths:
+        if not os.path.exists(path):
+            results.append({"error": f"File not found: {path}"})
+            continue
+        try:
+            ocr_result = _ocr.predict(path)
+            results.append(_build_text_result(path, ocr_result))
+        except Exception as exc:
+            logger.exception("OCR failed for %s", path)
+            results.append({"error": f"OCR failed: {exc}"})
+    if single_path and len(results) == 1:
+        if "error" in results[0]:
+            return {"id": req_id, "error": results[0]["error"]}
+        return {"id": req_id, "result": results[0]}
+    return {"id": req_id, "result": {"batch": True, "results": results}}
+
+
+def _handle_status(req: dict) -> dict:
+    return {"id": req.get("id", ""), "result": {
+        "loaded": True, "language": os.environ.get("PADDLEOCR_LANG", "ch"), "status": "ready",
+    }}
+
+
+def _handle_shutdown(req: dict) -> dict:
+    sys.stdout.write(json.dumps(
+        {"id": req.get("id", ""), "result": "ok"}, ensure_ascii=False
+    ) + "\n")
+    sys.stdout.flush()
+    _cleanup_gpu()
+    sys.exit(0)
+
+# ============================================================
+# 5. 主循环
 # ============================================================
 
 
 def main():
     _load_model()
-
-    # 发就绪信号，主进程等待此行后才发送第一个请求
     sys.stdout.write(json.dumps({"status": "ready"}, ensure_ascii=False) + "\n")
     sys.stdout.flush()
-
+    logger.info("Worker ready (idle_timeout=%ds).", IDLE_TIMEOUT)
     for line in sys.stdin:
         _bump()
         line = line.strip()
         if not line:
             continue
-
-        # 解析请求
         try:
             req = json.loads(line)
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError as exc:
             sys.stdout.write(json.dumps(
-                {"id": "", "error": f"Invalid JSON: {e}"}, ensure_ascii=False
+                {"id": "", "error": f"Invalid JSON: {exc}"}, ensure_ascii=False
             ) + "\n")
             sys.stdout.flush()
             continue
-
-        req_id = req.get("id", "")
         method = req.get("method", "")
-
-        try:
-            if method == "recognize":
-                image_path = req.get("image_path", "")
-                if not image_path or not os.path.exists(image_path):
-                    resp = {"id": req_id, "error": f"File not found: {image_path}"}
-                else:
-                    ocr_result = _ocr.predict(image_path)
-                    texts = _parse_result(ocr_result)
-                    resp = {"id": req_id, "result": {
-                        "image": os.path.basename(image_path),
-                        "text_count": len(texts),
-                        "texts": texts,
-                        "full_text": "\n".join(t["text"] for t in texts),
-                    }}
-
-            elif method == "ocr_status":
-                resp = {"id": req_id, "result": {
-                    "loaded": True, "language": "ch", "status": "ready",
-                }}
-
-            elif method == "shutdown":
-                sys.stdout.write(json.dumps(
-                    {"id": req_id, "result": "ok"}, ensure_ascii=False
-                ) + "\n")
-                sys.stdout.flush()
-                _cleanup_gpu()
-                sys.exit(0)
-
-            else:
-                resp = {"id": req_id, "error": f"Unknown method: {method}"}
-
-        except Exception as e:
-            resp = {"id": req_id, "error": str(e)}
-
+        if method == "recognize":
+            resp = _handle_recognize(req)
+        elif method == "ocr_status":
+            resp = _handle_status(req)
+        elif method == "shutdown":
+            resp = _handle_shutdown(req)
+        else:
+            resp = {"id": req.get("id", ""), "error": f"Unknown method: {method}"}
         sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
         sys.stdout.flush()
         _cleanup_gpu()

@@ -1,7 +1,6 @@
-"""
-PaddleOCR MCP Server — 轻量进程管理器。
-自身不加载模型（内存 ~0 MB），按需启动 PaddleOCR.exe 子进程。
-子进程常驻 60 秒，无请求自动退出。
+"""PaddleOCR MCP Server — 轻量进程管理器。
+自身不加载模型，按需启动 PaddleOCR 子进程。
+子进程空闲自动退出，超时时间由 PADDLEOCR_IDLE_TIMEOUT 控制。
 
 启动方式: python mcp_server.py
 """
@@ -15,32 +14,46 @@ import tempfile
 import subprocess
 import threading
 import atexit
+import logging
 from pathlib import Path
+from typing import Optional, List
 
 # ============================================================
-# 1. 子进程管理
+# 1. 配置与日志
 # ============================================================
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _WORKER_SCRIPT = os.path.join(_THIS_DIR, "ocr_worker.py")
-_PYTHON_EXE = os.path.join(os.path.dirname(sys.executable), "PaddleOCR.exe")
-if not os.path.exists(_PYTHON_EXE):
-    _PYTHON_EXE = sys.executable  # fallback: 没找到 hardlink 就用原始 python.exe
 
-_worker_proc = None
+_PYTHON_EXE = os.environ.get("PADDLEOCR_PYTHON") or os.path.join(
+    os.path.dirname(sys.executable), "PaddleOCR.exe"
+)
+if not os.path.exists(_PYTHON_EXE):
+    _PYTHON_EXE = sys.executable
+
+_IDLE_TIMEOUT = int(os.environ.get("PADDLEOCR_IDLE_TIMEOUT", "300"))
+
+logging.basicConfig(
+    level=os.environ.get("PADDLEOCR_LOG_LEVEL", "INFO").upper(),
+    format="[%(asctime)s] [%(levelname)s] %(message)s",
+    stream=sys.stderr,
+)
+logger = logging.getLogger("PaddleOCR")
+
+# ============================================================
+# 2. 子进程管理
+# ============================================================
+
+_worker_proc: Optional[subprocess.Popen] = None
 _worker_lock = threading.Lock()
 
 
 def _ensure_worker():
     """确保子进程存活。已死则重新启动。"""
     global _worker_proc
-
     with _worker_lock:
-        # 检查是否还活着
         if _worker_proc is not None and _worker_proc.poll() is None:
             return
-
-        # 清理僵尸进程
         if _worker_proc is not None:
             try:
                 _worker_proc.kill()
@@ -48,10 +61,9 @@ def _ensure_worker():
             except Exception:
                 pass
             _worker_proc = None
-
-        # 启动新子进程
-        sys.stderr.write("[PaddleOCR] Starting worker...\n")
-        sys.stderr.flush()
+        logger.info("Starting worker...")
+        env = os.environ.copy()
+        env["PADDLEOCR_IDLE_TIMEOUT"] = str(_IDLE_TIMEOUT)
         _worker_proc = subprocess.Popen(
             [_PYTHON_EXE, _WORKER_SCRIPT],
             stdin=subprocess.PIPE,
@@ -59,38 +71,34 @@ def _ensure_worker():
             stderr=subprocess.DEVNULL,
             text=True,
             bufsize=1,
+            env=env,
         )
-
-        # 等待就绪信号（超时 30 秒）
         try:
             line = _worker_proc.stdout.readline()
             data = json.loads(line)
             if data.get("status") != "ready":
                 raise RuntimeError(f"Worker not ready: {data}")
-        except Exception:
+        except Exception as exc:
             try:
                 _worker_proc.kill()
             except Exception:
                 pass
             _worker_proc = None
-            raise RuntimeError("PaddleOCR Worker 启动失败")
-
-        sys.stderr.write("[PaddleOCR] Worker ready.\n")
-        sys.stderr.flush()
+            raise RuntimeError(f"PaddleOCR Worker 启动失败: {exc}")
+        logger.info("Worker ready.")
 
 
 def _send_to_worker(method: str, **params) -> dict:
     """向子进程发送请求，返回 result dict（不含 error key 则成功）。"""
     global _worker_proc
-
     req_id = uuid.uuid4().hex[:8]
     req = {"id": req_id, "method": method}
-    req.update(params)
+    # 防止 params 覆盖 id/method
+    for key, value in params.items():
+        if key not in req:
+            req[key] = value
     payload = json.dumps(req, ensure_ascii=False) + "\n"
-
     _ensure_worker()
-
-    # 发送请求 + 读取响应，worker 崩溃时重试一次
     for attempt in (1, 2):
         try:
             _worker_proc.stdin.write(payload)
@@ -100,10 +108,10 @@ def _send_to_worker(method: str, **params) -> dict:
                 raise RuntimeError("Worker closed stdout")
             resp = json.loads(line)
             break
-        except (BrokenPipeError, RuntimeError):
+        except (BrokenPipeError, json.JSONDecodeError, RuntimeError) as exc:
+            logger.warning("Worker communication failed (attempt %d): %s", attempt, exc)
             if attempt == 2:
                 raise
-            # Worker 崩溃，强制重启
             with _worker_lock:
                 if _worker_proc is not None:
                     try:
@@ -112,14 +120,13 @@ def _send_to_worker(method: str, **params) -> dict:
                         pass
                     _worker_proc = None
             _ensure_worker()
-
     if "error" in resp:
         return {"error": resp["error"]}
     return resp.get("result", {})
 
 
 def _kill_worker():
-    """atexit 回调：优雅关闭子进程"""
+    """atexit 回调：优雅关闭子进程。"""
     global _worker_proc
     if _worker_proc is None or _worker_proc.poll() is not None:
         return
@@ -129,6 +136,7 @@ def _kill_worker():
         ) + "\n")
         _worker_proc.stdin.flush()
         _worker_proc.wait(timeout=3)
+        logger.info("Worker shut down.")
     except Exception:
         try:
             _worker_proc.kill()
@@ -138,39 +146,32 @@ def _kill_worker():
 
 atexit.register(_kill_worker)
 
-
 # ============================================================
-# 2. Transcript 图片提取（纯 IO，不涉及模型）
+# 3. Transcript 图片提取
 # ============================================================
 
 
-def _ocr_from_transcript(transcript_path: str = "") -> dict:
-    """
-    从 transcript JSONL 中提取最近一条 user 消息里的 base64 图片，
-    保存为临时文件后交给子进程 OCR。
-    """
+def _find_transcript(transcript_path: str = "") -> str:
+    """定位 transcript 文件路径。"""
     if transcript_path and os.path.exists(transcript_path):
-        tpath = transcript_path
-    else:
-        root = os.environ.get(
-            "CLAUDE_PROJECTS_ROOT",
-            os.path.join(Path.home(), ".claude", "projects"),
-        )
-        candidates = glob.glob(os.path.join(root, "*", "*.jsonl"))
-        if not candidates:
-            return {"error": "未找到 transcript 文件"}
-        tpath = max(candidates, key=os.path.getmtime)
+        return transcript_path
+    root = os.environ.get(
+        "CLAUDE_PROJECTS_ROOT",
+        os.path.join(Path.home(), ".claude", "projects"),
+    )
+    candidates = glob.glob(os.path.join(root, "*", "*.jsonl"))
+    if not candidates:
+        return ""
+    return max(candidates, key=os.path.getmtime)
 
-    if not os.path.exists(tpath):
-        return {"error": f"文件不存在: {tpath}"}
 
+def _extract_images_from_transcript(tpath: str) -> list[dict]:
+    """从 transcript JSONL 中提取最近一轮 user 消息里的所有 base64 图片。"""
     try:
         with open(tpath, "r", encoding="utf-8") as f:
             lines = [l.strip() for l in f if l.strip()]
-    except Exception as e:
-        return {"error": f"读取失败: {e}"}
-
-    # 从后往前找最近一条含图片的 user 消息
+    except Exception as exc:
+        raise RuntimeError(f"读取失败: {exc}")
     target_msg = None
     for line in reversed(lines):
         try:
@@ -188,11 +189,8 @@ def _ocr_from_transcript(transcript_path: str = "") -> dict:
         if any(c.get("type") == "image" for c in content if isinstance(c, dict)):
             target_msg = obj
             break
-
     if not target_msg:
-        return {"error": "未找到含图片的 user 消息"}
-
-    # 提取所有 base64 图片
+        return []
     images = []
     for c in target_msg["message"]["content"]:
         if not isinstance(c, dict) or c.get("type") != "image":
@@ -206,53 +204,75 @@ def _ocr_from_transcript(transcript_path: str = "") -> dict:
                 "media_type": src.get("media_type", "image/png"),
                 "data": data,
             })
+    return images
 
+
+def _save_base64_image(img: dict, tmp_dir: str) -> str:
+    """解码 base64 图片并保存为临时文件，返回路径。"""
+    raw = base64.b64decode(img["data"])
+    ext = ".jpg" if "jpeg" in img["media_type"] else ".png"
+    fp = os.path.join(tmp_dir, f"ts_{uuid.uuid4().hex[:8]}{ext}")
+    with open(fp, "wb") as f:
+        f.write(raw)
+    return fp
+
+
+def _ocr_from_transcript(transcript_path: str = "") -> dict:
+    """从 transcript 提取图片并批量 OCR。"""
+    tpath = _find_transcript(transcript_path)
+    if not tpath:
+        return {"success": False, "error": "未找到 transcript 文件", "results": []}
+    try:
+        images = _extract_images_from_transcript(tpath)
+    except RuntimeError as exc:
+        return {"success": False, "error": str(exc), "results": []}
     if not images:
-        return {"error": "不含 base64 数据"}
-
-    # 逐张保存临时文件 → 交给子进程 OCR
-    results = []
+        return {"success": False, "error": "未找到含图片的 user 消息或不含 base64 数据", "results": []}
     tmp_dir = tempfile.gettempdir()
+    tmp_paths: list[tuple[int, str]] = []
+    results: list[dict] = []
     for i, img in enumerate(images):
         try:
-            raw = base64.b64decode(img["data"])
-        except Exception:
-            results.append({"index": i, "error": "base64 解码失败"})
-            continue
-
-        ext = ".jpg" if "jpeg" in img["media_type"] else ".png"
-        fp = os.path.join(tmp_dir, f"ts_{uuid.uuid4().hex[:8]}{ext}")
-        try:
-            with open(fp, "wb") as f:
-                f.write(raw)
-        except Exception as e:
-            results.append({"index": i, "error": str(e)})
-            continue
-
-        r = _send_to_worker("recognize", image_path=fp)
+            fp = _save_base64_image(img, tmp_dir)
+            tmp_paths.append((i, fp))
+        except Exception as exc:
+            results.append({"index": i, "error": str(exc)})
+    if tmp_paths:
+        paths = [fp for _, fp in tmp_paths]
+        r = _send_to_worker("recognize", image_paths=paths)
         if "error" in r:
-            results.append({"index": i, "error": r["error"]})
+            for i, _ in tmp_paths:
+                results.append({"index": i, "error": r["error"]})
         else:
-            results.append({
-                "index": i,
-                "text_count": r.get("text_count", 0),
-                "full_text": r.get("full_text", ""),
-            })
-
-        try:
-            os.unlink(fp)
-        except Exception:
-            pass
-
+            batch_results = r.get("results", [])
+            if len(batch_results) != len(tmp_paths):
+                batch_results = [r]
+            for (i, _), br in zip(tmp_paths, batch_results):
+                if "error" in br:
+                    results.append({"index": i, "error": br["error"]})
+                else:
+                    results.append({
+                        "index": i,
+                        "image": br.get("image", ""),
+                        "text_count": br.get("text_count", 0),
+                        "texts": br.get("texts", []),
+                        "full_text": br.get("full_text", ""),
+                    })
+        for _, fp in tmp_paths:
+            try:
+                os.unlink(fp)
+            except Exception:
+                pass
     return {
+        "success": True,
+        "source": "transcript",
         "transcript": os.path.basename(tpath),
         "images_found": len(images),
         "results": results,
     }
 
-
 # ============================================================
-# 3. MCP Server
+# 4. MCP Server
 # ============================================================
 
 from fastmcp import FastMCP  # noqa: E402
@@ -267,37 +287,95 @@ MCP 会自动从当前会话 transcript 中提取所有图片并 OCR。
 )
 
 
+def _normalize_result(r: dict, image: str = "") -> dict:
+    """统一 recognize 返回值结构。"""
+    if "error" in r:
+        return {"success": False, "error": r["error"], "results": []}
+    return {
+        "success": True,
+        "source": "image_path",
+        "images_found": 1,
+        "results": [{
+            "index": 0,
+            "image": r.get("image", image),
+            "text_count": r.get("text_count", 0),
+            "texts": r.get("texts", []),
+            "full_text": r.get("full_text", ""),
+        }],
+    }
+
+
 @mcp.tool
 def recognize(image_path: str = "") -> dict:
-    """
-    识别图片中的文字。
-    不传 image_path → 自动从当前会话 transcript 中提取所有图片并 OCR。
+    """识别图片中的文字。
+    不传 image_path → 自动从当前会话 transcript 提取所有图片。
     传 image_path → 直接 OCR 指定文件。
     """
-    # 无路径 → transcript 兜底
-    if not image_path:
-        return _ocr_from_transcript()
+    try:
+        if not image_path:
+            return _ocr_from_transcript()
+        if not os.path.exists(image_path):
+            return {"success": False, "error": f"文件不存在: {image_path}", "results": []}
+        r = _send_to_worker("recognize", image_path=image_path)
+        return _normalize_result(r, image=os.path.basename(image_path))
+    except Exception as exc:
+        logger.error("recognize failed: %s", exc)
+        return {"success": False, "error": str(exc), "results": []}
 
-    # 有路径 → 直接发给子进程 OCR
-    if not os.path.exists(image_path):
-        return {"error": f"文件不存在: {image_path}"}
 
-    r = _send_to_worker("recognize", image_path=image_path)
-    if "error" in r:
-        return r
-    return r
+@mcp.tool
+def recognize_batch(image_paths: Optional[List[str]] = None) -> dict:
+    """批量识别多张图片中的文字。"""
+    try:
+        if not image_paths:
+            return {"success": False, "error": "image_paths 不能为空", "results": []}
+        valid_paths: list[tuple[int, str]] = []
+        results: list[dict] = []
+        for i, p in enumerate(image_paths):
+            if os.path.exists(p):
+                valid_paths.append((i, p))
+            else:
+                results.append({"index": i, "error": f"文件不存在: {p}"})
+        if not valid_paths:
+            return {"success": False, "error": "所有路径均无效", "results": results}
+        paths = [p for _, p in valid_paths]
+        r = _send_to_worker("recognize", image_paths=paths)
+        if "error" in r:
+            return {"success": False, "error": r["error"], "results": results}
+        batch_results = r.get("results", [])
+        for (i, p), br in zip(valid_paths, batch_results):
+            if "error" in br:
+                results.append({"index": i, "error": br["error"]})
+            else:
+                results.append({
+                    "index": i,
+                    "image": br.get("image", os.path.basename(p)),
+                    "text_count": br.get("text_count", 0),
+                    "texts": br.get("texts", []),
+                    "full_text": br.get("full_text", ""),
+                })
+        return {
+            "success": True,
+            "source": "batch",
+            "images_found": len(image_paths),
+            "results": results,
+        }
+    except Exception as exc:
+        logger.error("recognize_batch failed: %s", exc)
+        return {"success": False, "error": str(exc), "results": []}
 
 
 @mcp.tool
 def ocr_status() -> dict:
     """检查 OCR 引擎状态。"""
     try:
-        return _send_to_worker("ocr_status")
-    except Exception as e:
-        return {"loaded": False, "error": str(e), "status": "error"}
+        r = _send_to_worker("ocr_status")
+        return {"success": True, "loaded": r.get("loaded", False), "status": r.get("status", "unknown")}
+    except Exception as exc:
+        logger.error("ocr_status failed: %s", exc)
+        return {"success": False, "loaded": False, "error": str(exc), "status": "error"}
 
 
 if __name__ == "__main__":
-    sys.stderr.write("[PaddleOCR] MCP Server started (process manager mode).\n")
-    sys.stderr.flush()
+    logger.info("MCP Server started (process manager mode).")
     mcp.run()

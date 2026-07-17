@@ -13,12 +13,32 @@ PaddleOCR MCP Server provides OCR capabilities to AI assistants. When the AI cal
 
 ### 1. Create Environment & Install Dependencies
 
+You can use either **conda** or **venv**.
+
+#### Option 1: conda (recommended for GPU dependency management)
+
 ```bash
 conda create -n paddle_ocr python=3.10
 conda activate paddle_ocr
 
 pip install paddlepaddle-gpu paddleocr fastmcp
 ```
+
+#### Option 2: venv / virtualenv
+
+```bash
+# Create and activate virtual environment
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+source .venv/bin/activate
+
+# Install dependencies
+pip install paddlepaddle-gpu paddleocr fastmcp
+```
+
+> **CPU users**: replace `paddlepaddle-gpu` with `paddlepaddle`.
 
 On first use, PaddleOCR automatically downloads model weights (~140MB) from ModelScope and caches them in the `models/` directory. No manual download required.
 
@@ -28,10 +48,10 @@ PaddleOCR works with the following AI coding tools:
 
 | Platform | Config File (User) | Config File (Project) | Format | Status |
 |----------|-------------------|----------------------|:--:|:--:|
-| **Claude Code** | `~/.claude.json` `mcpServers` field | `<project>/.mcp.json` | JSON | ✅ Verified |
-| **Codex** | `~/.codex/config.toml` | `<project>/.codex/config.toml` | TOML | ⚠️ Web research, untested |
-| **Cursor** | `~/.cursor/mcp.json` | `<project>/.cursor/mcp.json` | JSON | ⚠️ Web research, untested |
-| **Trae** | `~/.trae/mcp.json` | `<project>/.trae/mcp.json` | JSON | ⚠️ Web research, untested |
+| **Claude Code** | `~/.claude.json` `mcpServers` field | `<project>/.mcp.json` | JSON | Verified |
+| **Codex** | `~/.codex/config.toml` | `<project>/.codex/config.toml` | TOML | Untested |
+| **Cursor** | `~/.cursor/mcp.json` | `<project>/.cursor/mcp.json` | JSON | Untested |
+| **Trae** | `~/.trae/mcp.json` | `<project>/.trae/mcp.json` | JSON | Untested |
 
 > **User-level** registration is recommended — configure once, available in all projects.
 
@@ -52,7 +72,9 @@ Edit `~/.claude.json`, add under the `mcpServers` field:
 
 > **Note**: If `mcpServers` already exists in `~/.claude.json`, merge `PaddleOCR` into it. You can also use the dedicated `~/.claude/mcp.json` file — just don't configure both simultaneously, or the MCP will be loaded twice.
 
-#### Codex (Web Research)
+If using venv, set `command` to `.venv\Scripts\python.exe` (Windows) or `.venv/bin/python` (macOS / Linux).
+
+#### Codex (Untested)
 
 ```toml
 [mcp_servers.PaddleOCR]
@@ -70,7 +92,7 @@ codex mcp add PaddleOCR -- "E:/soft/anaconda3/envs/paddle_ocr/python.exe" "E:/so
 
 Restart Codex terminal after configuration. Verify with `codex mcp list`.
 
-#### Cursor (Web Research)
+#### Cursor (Untested)
 
 ```json
 {
@@ -87,7 +109,7 @@ After saving, check Cursor Settings → MCP panel for a green indicator. `Cmd+Sh
 
 > On Windows, if issues arise, wrap with `"command": "cmd"` and `"args": ["/c", "E:/...python.exe", "E:/.../mcp_server.py"]`.
 
-#### Trae (Web Research)
+#### Trae (Untested)
 
 ```json
 {
@@ -100,7 +122,7 @@ After saving, check Cursor Settings → MCP panel for a green indicator. `Cmd+Sh
 }
 ```
 
-> Trae requires **absolute paths** for `command`. Do not use bare `python`. Ensure the Python interpreter selected in Trae matches your conda environment.
+> Trae requires **absolute paths** for `command`. Do not use bare `python`. Ensure the Python interpreter selected in Trae matches your conda/venv environment.
 
 Restart Trae IDE after configuration. A green indicator in the MCP panel confirms success.
 
@@ -108,11 +130,11 @@ Restart Trae IDE after configuration. A green indicator in the MCP panel confirm
 
 - **Pick one registration method** (user-level recommended). Configuring both user and project level for the same MCP spawns duplicate processes.
 - Replace all paths with your actual local paths.
-- macOS / Linux users: replace `python.exe` with `python` or the conda environment's `bin/python`.
+- macOS / Linux users: replace `python.exe` with `python` or the conda/venv environment's `bin/python`.
 
 #### Verify
 
-After restarting your IDE, ask the AI "what tools are available?" — you should see `mcp__paddleocr__recognize` and `mcp__paddleocr__ocr_status`.
+After restarting your IDE, ask the AI "what tools are available?" — you should see `mcp__paddleocr__recognize`, `mcp__paddleocr__recognize_batch`, and `mcp__paddleocr__ocr_status`.
 
 ## Usage
 
@@ -132,6 +154,16 @@ Tell the AI the full path to an image file in your message. The AI will call `re
 Read this image for me: C:\Users\Administrator\Desktop\screenshot.png
 ```
 
+### Method 4: Batch Recognition
+
+To recognize multiple local images at once, ask the AI:
+
+```
+Please recognize these images: C:\a.png, C:\b.png, C:\c.png
+```
+
+The AI will call `recognize_batch(image_paths=["C:/a.png", "C:/b.png", "C:/c.png"])`.
+
 ## Improving Tool Call Accuracy
 
 External models connected to Claude Code (such as DeepSeek) may occasionally ignore the MCP tool's built-in `instructions`, resulting in the AI not calling OCR when it sees `[Unsupported Image]`.
@@ -148,41 +180,6 @@ Report the results as "From the image, I read the following content:" to the use
 ```
 
 > **Why this works**: MCP tool `instructions` are passed as part of tool definitions, which some models pay less attention to during tool calling decisions. `CLAUDE.md` is a system-level directive with higher compliance priority.
-
-## Screenshots vs. Photos: Switching Recognition Modes
-
-**Default mode** (optimized for screenshots, UI, code):
-
-```python
-# Current ocr_worker.py configuration
-_ocr = PaddleOCR(
-    lang="ch",
-    use_textline_orientation=False,        # Skip textline orientation detection
-    use_doc_orientation_classify=False,    # Skip document orientation classification
-    use_doc_unwarping=False,               # Skip document unwarping
-)
-```
-
-This mode loads only the detection + recognition models (~900MB RAM, ~0.3s inference). Suitable for most use cases.
-
-**High-accuracy mode** (photos, scanned documents, rotated/curved text):
-
-```python
-_ocr = PaddleOCR(
-    lang="ch",
-    use_textline_orientation=True,         # Detect upside-down text lines
-    use_doc_orientation_classify=True,     # Correct document rotation (0°/90°/180°/270°)
-    use_doc_unwarping=True,                # Flatten curved pages
-)
-```
-
-| Parameter | Purpose | Use Case |
-|-----------|---------|----------|
-| `use_textline_orientation` | Detect 180° text rotation | Phone held upside-down, rotated screenshots |
-| `use_doc_orientation_classify` | Detect page orientation (4 directions) | Landscape photos of portrait docs, rotated PDFs |
-| `use_doc_unwarping` | Flatten curved paper surfaces | Book pages, bent paper photos |
-
-**How to switch**: Edit `ocr_worker.py` lines 48-52, change the relevant parameters to `True`, and restart Claude Code. Trade-off: 4 models loaded, ~1.7GB RAM, slightly slower inference, significantly higher accuracy.
 
 ## Hardware Requirements
 
@@ -204,32 +201,120 @@ Falls back to CPU mode if no GPU is available — 5-10x slower but still functio
 Recognize text from images.
 
 - **Parameter**: `image_path` — Full path to the image file (optional; if omitted, extracts images from the current session transcript)
-- **Returns**: Recognized text lines with confidence scores
+- **Returns**:
+  ```json
+  {
+    "success": true,
+    "source": "transcript",
+    "images_found": 2,
+    "results": [
+      {
+        "index": 0,
+        "image": "screenshot.png",
+        "text_count": 3,
+        "texts": [{"text": "Line 1", "confidence": 0.99}],
+        "full_text": "Line 1\nLine 2"
+      }
+    ]
+  }
+  ```
+
+### recognize_batch
+
+Recognize text from multiple local images at once.
+
+- **Parameter**: `image_paths` — List of image paths (required)
+- **Returns**: Same unified structure as `recognize`, with `source` set to `"batch"`
 
 ### ocr_status
 
 Check OCR engine status.
+
+- **Returns**: `{"success": true, "loaded": true, "status": "ready"}`
+
+## Screenshots vs. Photos: Switching Recognition Modes
+
+The default mode is optimized for screenshots, UI, and code. You can switch modes via environment variables without editing code.
+
+**Default mode** (lightweight, loads only detection + recognition models):
+
+```bash
+# No extra settings needed; these are the defaults
+PADDLEOCR_USE_TEXTLINE_ORIENTATION=false
+PADDLEOCR_USE_DOC_ORIENTATION_CLASSIFY=false
+PADDLEOCR_USE_DOC_UNWARPING=false
+```
+
+This mode uses ~900MB RAM and ~0.3s inference. Suitable for most use cases.
+
+**High-accuracy mode** (photos, scanned documents, rotated/curved text):
+
+```bash
+PADDLEOCR_USE_TEXTLINE_ORIENTATION=true
+PADDLEOCR_USE_DOC_ORIENTATION_CLASSIFY=true
+PADDLEOCR_USE_DOC_UNWARPING=true
+```
+
+| Parameter | Purpose | Use Case |
+|-----------|---------|----------|
+| `use_textline_orientation` | Detect 180° text rotation | Phone held upside-down, rotated screenshots |
+| `use_doc_orientation_classify` | Detect page orientation (4 directions) | Landscape photos of portrait docs, rotated PDFs |
+| `use_doc_unwarping` | Flatten curved paper surfaces | Book pages, bent paper photos |
+
+Trade-off: 4 models loaded, ~1.7GB RAM, slightly slower inference, significantly higher accuracy.
+
+**Multi-language**: switch via `PADDLEOCR_LANG`, e.g. `en`, `japan`, `korean`, `chinese_cht`. Default is `ch`.
+
+**CPU mode**: set `PADDLEOCR_USE_GPU=false` to force CPU inference.
 
 ## Architecture
 
 ```
 Claude Code starts → reads mcp.json → launches mcp_server.py (lightweight manager, ~85MB)
   → AI calls recognize() → manager spawns python ocr_worker.py (worker with model, ~900MB)
-    → OCR completes → worker stays alive for 5 minutes → idle timeout → exits, releasing GPU
+    → OCR completes → worker stays alive (default 300s, configurable via PADDLEOCR_IDLE_TIMEOUT)
+    → idle timeout → exits, releasing GPU
 ```
 
 | Process | RAM | Lifetime |
 |---------|-----|----------|
 | mcp_server.py | ~85 MB | Duration of Claude Code session |
-| ocr_worker.py | ~900 MB | Reused for 5 minutes after last OCR, then exits |
+| ocr_worker.py | ~900 MB | Reused during idle timeout after last OCR, then exits |
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PADDLEOCR_CACHE` | `<script_dir>/models` | Model cache directory |
-| `PADDLEOCR_SITE_PACKAGES` | (empty, no DLL dirs set) | Path to conda env's `Lib/site-packages` |
-| `CLAUDE_PROJECTS_ROOT` | `~/.claude/projects` | Transcript file search root |
+| `PADDLEOCR_SITE_PACKAGES` | (empty) | Path to conda/venv `Lib/site-packages`, used to add CUDA DLL directories |
+| `PADDLEOCR_PYTHON` | (auto-detected) | Absolute path to Python interpreter used to spawn the worker subprocess |
+| `PADDLEOCR_IDLE_TIMEOUT` | `300` | Worker idle auto-exit time in seconds |
+| `PADDLEOCR_LOG_LEVEL` | `INFO` | Log level: `DEBUG`/`INFO`/`WARNING`/`ERROR` |
+| `PADDLEOCR_LANG` | `ch` | OCR language: `ch`/`en`/`japan`/`korean`/`chinese_cht`, etc. |
+| `PADDLEOCR_USE_GPU` | `true` | Use GPU; falls back to CPU automatically if no GPU |
+| `PADDLEOCR_USE_TEXTLINE_ORIENTATION` | `false` | Textline orientation detection |
+| `PADDLEOCR_USE_DOC_ORIENTATION_CLASSIFY` | `false` | Document orientation classification |
+| `PADDLEOCR_USE_DOC_UNWARPING` | `false` | Document unwarping correction |
+| `CLAUDE_PROJECTS_ROOT` | `~/.claude/projects` | Transcript file search root directory |
+
+### Passing environment variables in MCP config
+
+#### Claude Code
+
+```json
+{
+  "mcpServers": {
+    "PaddleOCR": {
+      "command": "E:/soft/anaconda3/envs/paddle_ocr/python.exe",
+      "args": ["E:/soft/OCR/Paddle_ocr/mcp_server.py"],
+      "env": {
+        "PADDLEOCR_USE_GPU": "false",
+        "PADDLEOCR_USE_DOC_UNWARPING": "true"
+      }
+    }
+  }
+}
+```
 
 ## License
 
